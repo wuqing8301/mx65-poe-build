@@ -1,1 +1,66 @@
+name: Build MX65/MX65W PoE OpenWrt Firmware
 
+on:
+  workflow_dispatch:        # 手动触发
+  push:
+    branches: [main]
+    paths-ignore: ['.github/**', 'README.md']
+
+jobs:
+  build:
+    name: Build MX65 PoE Firmware
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Leo-PL OpenWrt (meraki-mx65-poe branch)
+        uses: actions/checkout@v4
+        with:
+          repository: Leo-PL/openwrt
+          ref: meraki-mx65-poe
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libncurses5-dev libncursesw5-dev \
+            zlib1g-dev gawk git gettext libssl-dev xsltproc \
+            rsync wget unzip python3 python3-pip \
+            binutils bzip2 diffutils findutils flex grep install \
+            libz-dev libstdc++-12-dev subversion
+
+      - name: Update and install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure for MX65 / MX65W (PoE)
+        run: |
+          # 生成默认配置
+          make defconfig
+          # 写入 MX65 目标配置
+          cat << 'EOF' >> .config
+          CONFIG_TARGET_bcm53xx=y
+          CONFIG_TARGET_bcm53xx_generic=y
+          CONFIG_TARGET_bcm53xx_generic_DEVICE_meraki_mx65=y
+          CONFIG_PACKAGE_kmod-bcm59111-pse=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+          EOF
+          make oldconfig <<< ""
+
+      - name: Download sources (parallel)
+        run: make download -j$(nproc)
+
+      - name: Build firmware
+        run: make -j$(nproc) V=s
+
+      - name: Upload sysupgrade & initramfs artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mx65-poe-firmware
+          path: |
+            bin/targets/bcm53xx/generic/openwrt-bcm53xx-generic-meraki_mx65-squashfs-sysupgrade.bin
+            bin/targets/bcm53xx/generic/openwrt-bcm53xx-generic-meraki_mx65-initramfs-kernel.bin
+          retention-days: 30
