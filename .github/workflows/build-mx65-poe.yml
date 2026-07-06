@@ -24,11 +24,29 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential libncurses5-dev libncursesw5-dev \
-            zlib1g-dev gawk git gettext libssl-dev xsltproc \
-            rsync wget unzip python3 python3-pip \
-            binutils bzip2 diffutils findutils flex grep install \
-            libz-dev libstdc++-12-dev subversion
+            build-essential \
+            libncurses5-dev \
+            libncursesw5-dev \
+            zlib1g-dev \
+            gawk \
+            git \
+            gettext \
+            libssl-dev \
+            xsltproc \
+            rsync \
+            wget \
+            unzip \
+            python3 \
+            python3-pip \
+            binutils \
+            bzip2 \
+            diffutils \
+            findutils \
+            flex \
+            grep \
+            libz-dev \
+            libstdc++-12-dev \
+            subversion
 
       - name: Update and install feeds
         run: |
@@ -37,10 +55,8 @@ jobs:
 
       - name: Configure for MX65 / MX65W (PoE)
         run: |
-          # 生成默认配置
           make defconfig
-          # 写入 MX65 目标配置
-          cat << 'EOF' >> .config
+          cat >> .config << 'EOF'
           CONFIG_TARGET_bcm53xx=y
           CONFIG_TARGET_bcm53xx_generic=y
           CONFIG_TARGET_bcm53xx_generic_DEVICE_meraki_mx65=y
