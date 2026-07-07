@@ -46,7 +46,14 @@ jobs:
             grep \
             libz-dev \
             libstdc++-12-dev \
-            subversion
+            subversion \
+            ninja-build
+          # 安装 CMake 3.31+
+          wget -q https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz
+          sudo tar xf cmake-3.31.6-linux-x86_64.tar.gz -C /opt/
+          sudo ln -sf /opt/cmake-3.31.6-linux-x86_64/bin/cmake /usr/local/bin/cmake
+          sudo ln -sf /opt/cmake-3.31.6-linux-x86_64/bin/ctest /usr/local/bin/ctest
+          cmake --version
 
       - name: Update and install feeds
         run: |
@@ -63,6 +70,7 @@ jobs:
           CONFIG_PACKAGE_kmod-bcm59111-pse=y
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_rpcd-mod-rrdns=n
           EOF
           make oldconfig <<< ""
 
@@ -70,7 +78,7 @@ jobs:
         run: make download -j$(nproc)
 
       - name: Build firmware
-        run: make -j$(nproc) V=s
+        run: make -j2 V=s
 
       - name: Upload sysupgrade & initramfs artifacts
         uses: actions/upload-artifact@v4
