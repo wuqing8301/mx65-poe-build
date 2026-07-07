@@ -1,13 +1,13 @@
 name: Build MX65/MX65W PoE OpenWrt Firmware
 
-env:
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
-
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths-ignore: ['.github/**', 'README.md']
+
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
 
 jobs:
   build:
@@ -23,12 +23,18 @@ jobs:
           ref: meraki-mx65-poe
           fetch-depth: 1
 
-      - name: Create swap space (prevent OOM)
+      - name: Create swap space (prevent OOM, use dd for compatibility)
         run: |
-          sudo fallocate -l 8G /swapfile
+          # 关闭所有现有 swap（防止 /swapfile busy）
+          sudo swapoff -a || true
+          # 删除旧的 swap 文件
+          sudo rm -f /swapfile
+          # 使用 dd 创建 8G swap 文件（更兼容）
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=progress
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
+          # 验证
           free -h
 
       - name: Install build dependencies
