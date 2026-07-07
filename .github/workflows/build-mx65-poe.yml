@@ -1,91 +1,127 @@
-name: Build MX65/MX65W PoE OpenWrt Firmware
+name: Build MX65 PoE Firmware
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths-ignore: ['.github/**', 'README.md']
-
-env:
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
 
 jobs:
   build:
-    name: Build MX65 PoE Firmware
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
-
+    runs-on: ubuntu-latest
+    env:
+      # 设置编译环境变量，防止中文乱码及交互
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # 可选：消除 Node.js 警告
     steps:
-      - name: Checkout Leo-PL OpenWrt (meraki-mx65-poe branch)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          repository: Leo-PL/openwrt
-          ref: meraki-mx65-poe
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Create swap space (prevent OOM, use dd for compatibility)
+      - name: Free up disk space
         run: |
-          # 关闭所有现有 swap（防止 /swapfile busy）
-          sudo swapoff -a || true
-          # 删除旧的 swap 文件
-          sudo rm -f /swapfile
-          # 使用 dd 创建 8G swap 文件（更兼容）
-          sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=progress
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          # 验证
-          free -h
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet
+          df -h
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libncurses5-dev libncursesw5-dev \
-            zlib1g-dev gawk git gettext \
-            libssl-dev xsltproc rsync wget unzip \
-            python3 python3-pip binutils bzip2 \
-            diffutils findutils flex grep \
-            libz-dev libstdc++-12-dev subversion \
-            ninja-build
-          # Install CMake 3.31+
-          wget -q https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz
-          sudo tar xf cmake-3.31.6-linux-x86_64.tar.gz -C /opt/
-          sudo ln -sf /opt/cmake-3.31.6-linux-x86_64/bin/cmake /usr/local/bin/cmake
-          sudo ln -sf /opt/cmake-3.31.6-linux-x86_64/bin/ctest /usr/local/bin/ctest
-          cmake --version
+          sudo apt update
+          sudo apt install -y build-essential libncurses-dev gawk flex unzip \
+          python3 python3-pip zlib1g-dev subversion git libncurses5-dev \
+          libssl-dev libelf-dev bc ccache qemu-utils dwarves
 
-      - name: Update and install feeds
+      - name: Clone toolchain & feeds (Example, adjust if yours is different)
         run: |
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          # 假设你是基于 openwrt/main 分支
+          git clone --depth=1 https://git.openwrt.org/openwrt/openwrt.git openwrt
+          cd openwrt
+          # 添加你的 feeds 或补丁
+          # ./scripts/feeds update -a
+          # ./scripts/feeds install -a
 
-      - name: Configure for MX65 / MX65W (PoE)
+      - name: Apply patches (if any)
         run: |
+          cd openwrt
+          # 复制你的 mx65-poe 补丁或文件到这里
+
+      - name: Configure for MX65 / MX65W (PoE) - Stable Version
+        run: |
+          cd openwrt
+          
+          # 1. 生成默认配置
           make defconfig
+          
+          # 2. 写入核心配置 (精简版：保留PoE, Luci中文, 关闭高内存占用项)
           cat >> .config << 'EOF'
+          # Target
           CONFIG_TARGET_bcm53xx=y
           CONFIG_TARGET_bcm53xx_generic=y
           CONFIG_TARGET_bcm53xx_generic_DEVICE_meraki_mx65=y
+          
+          # PoE Driver (Critical)
           CONFIG_PACKAGE_kmod-bcm59111-pse=y
+          
+          # Core System (Stable)
+          CONFIG_PACKAGE_busybox=y
+          CONFIG_PACKAGE_ubox=y
+          CONFIG_PACKAGE_logd=y
+          CONFIG_PACKAGE_getrandom=y
+          CONFIG_PACKAGE_ucode=y
+          CONFIG_PACKAGE_ucode-mod-lua=y
+          CONFIG_PACKAGE_rpcd=y
+          CONFIG_PACKAGE_uhttpd=y
+          CONFIG_PACKAGE_uhttpd-mod-ubus=y
+          
+          # Luci (Minimal Chinese)
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-ssl=y
-          CONFIG_PACKAGE_rpcd-mod-rrdns=n
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_LUCI_LANG_zh_Hans=y
+          
+          # Optional: Keep rpcd-mod-luci but disable heavy ones
+          CONFIG_PACKAGE_rpcd-mod-luci=y
+          # Disable heavy/problematic packages to save RAM
+          CONFIG_PACKAGE_luci-app-firewall=n
+          CONFIG_PACKAGE_luci-app-sqm=n
+          CONFIG_PACKAGE_luci-app-upnp=n
+          CONFIG_PACKAGE_collectd=n
+          CONFIG_PACKAGE_netdata=n
+          CONFIG_PACKAGE_nginx=n
+          
+          # Compiler settings to reduce OOM risk
+          # CONFIG_USE_LTO is usually auto-enabled, we might want to disable it if OOM persists
+          # echo "# CONFIG_USE_LTO is not set" >> .config
           EOF
-          make oldconfig <<< ""
+          
+          # 3. 关键：自动处理所有 [N/y/?] 交互，全部选默认（通常是 N 或 Y）
+          echo ">>> Running oldconfig..."
+          yes "" | make oldconfig
+          
+          # 4. 检查关键包是否还在
+          echo ">>> Checking config summary:"
+          grep -E "CONFIG_PACKAGE_(kmod-bcm59111-pse|luci|rpcd)" .config || echo "Warning: Some key packages missing"
 
-      - name: Download sources (parallel)
-        run: make download -j2
+      - name: Build the firmware
+        run: |
+          cd openwrt
+          
+          # 清理之前的残留，防止旧文件干扰
+          make clean
+          
+          # 编译命令:
+          # -j2: 双线程，配合 8G Swap 最稳
+          # V=s: 显示详细日志，方便排错
+          # NO_KMODS=1: 跳过内核模块编译（如果只做固件），或者去掉它编译全部
+          make -j2 V=s 2>&1 | tee build.log
+          
+          # 检查最后一行是否有 Error
+          if tail -n 50 build.log | grep -q "Error"; then
+            echo "Build failed!"
+            exit 1
+          fi
 
-      - name: Build firmware (low parallelism to avoid OOM)
-        run: make -j2 V=s
-
-      - name: Upload sysupgrade & initramfs artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mx65-poe-firmware
-          path: |
-            bin/targets/bcm53xx/generic/openwrt-bcm53xx-generic-meraki_mx65-squashfs-sysupgrade.bin
-            bin/targets/bcm53xx/generic/openwrt-bcm53xx-generic-meraki_mx65-initramfs-kernel.bin
-          retention-days: 30
+          name: MX65-PoE-Firmware
+          path: openwrt/bin/targets/bcm53xx/generic/
+          if-no-files-found: error
