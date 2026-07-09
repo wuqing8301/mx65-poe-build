@@ -2,136 +2,101 @@ name: Build MX65 PoE Firmware (Minimal + PoE + Chinese)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths-ignore: ['.github/**', 'README.md']
-
-env:
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
 
 jobs:
   build:
-    name: Build MX65 PoE Firmware
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
+    runs-on: ubuntu-latest
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      # 强制使用 Node 24，消除警告
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - name: Checkout Leo-PL OpenWrt (meraki-mx65-poe branch)
+      - name: Checkout (你的仓库)
         uses: actions/checkout@v4
         with:
-          repository: Leo-PL/openwrt
-          ref: meraki-mx65-poe
+          repository: wuqing8301/mx65-poe-build  # 确保这里是你的仓库名
+          ref: main
           fetch-depth: 1
 
-      - name: Create swap space (prevent OOM, use dd for compatibility)
+      - name: Free up disk space (激进清理)
         run: |
-          sudo swapoff -a || true
-          sudo rm -f /swapfile
-          sudo dd if=/dev/zero of=/swapfile bs=1M count=8192 status=progress
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet /var/lib/snapd
+          sudo apt clean
+          sudo apt autoremove -y
+          df -h
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libncurses5-dev libncursesw5-dev \
-            zlib1g-dev gawk git gettext \
-            libssl-dev xsltproc rsync wget unzip \
-            python3 python3-pip binutils bzip2 \
-            diffutils findutils flex grep \
-            libz-dev libstdc++-12-dev subversion \
-            ninja-build ccache
+          sudo apt update
+          sudo apt install -y build-essential libncurses-dev gawk flex unzip \
+            python3 python3-pip zlib1g-dev subversion git libncurses5-dev \
+            libssl-dev libelf-dev bc ccache qemu-utils dwarves
 
-      - name: Install CMake 3.31+
+      # 【关键修复 1】配置 Git 换源，防止 clone 超时
+      - name: Configure Git & Clone OpenWrt
         run: |
-          wget -q https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz
-          sudo tar xf cmake-3.31.6-linux-x86_64.tar.gz -C /opt/
-          sudo ln -sf /opt/cmake-3.31.6-linux-x86_64/bin/cmake /usr/local/bin/cmake
-          sudo ln -sf /opt/cmake-3.31.6-linux-x86_64/bin/ctest /usr/local/bin/ctest
-          cmake --version
-
-      - name: Update and install feeds
-        run: |
+          git config --global url."https://ghproxy.com/https://github.com/".insteadOf "https://github.com/"
+          
+          # 克隆官方源码（浅克隆，只拉最新版）
+          git clone --depth=1 https://git.openwrt.org/openwrt/openwrt.git openwrt
+          cd openwrt
+          
+          # 【关键修复 2】更新 feeds 时使用国内镜像（可选，如果网络好可省略）
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Configure for MX65 (Minimal + PoE + Chinese)
+      - name: Configure for MX65 (PoE + Chinese + Minimal)
         run: |
+          cd openwrt
+          
+          # 生成默认配置
           make defconfig
+          
+          # 写入核心配置
           cat >> .config << 'EOF'
-          # ===== Target =====
           CONFIG_TARGET_bcm53xx=y
           CONFIG_TARGET_bcm53xx_generic=y
           CONFIG_TARGET_bcm53xx_generic_DEVICE_meraki_mx65=y
-
-          # ===== PoE Driver (Critical) =====
           CONFIG_PACKAGE_kmod-bcm59111-pse=y
-
-          # ===== Core System (Minimal) =====
-          CONFIG_PACKAGE_busybox=y
-          CONFIG_PACKAGE_ubox=y
-          CONFIG_PACKAGE_logd=y
-          CONFIG_PACKAGE_getrandom=y
-          CONFIG_PACKAGE_rpcd=y
-          CONFIG_PACKAGE_uhttpd=y
-          CONFIG_PACKAGE_uhttpd-mod-ubus=y
-          CONFIG_PACKAGE_ucode=y
-
-          # ===== LuCI (Minimal + Chinese) =====
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-ssl=y
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
           CONFIG_LUCI_LANG_zh_Hans=y
-
-          # ===== PoE Status Display =====
+          CONFIG_PACKAGE_rpcd-mod-luci=y
           CONFIG_PACKAGE_luci-app-poe=y
-
-          # ===== Disable LTO (reduce RAM usage) =====
-          # CONFIG_USE_LTO is not set
-
-          # ===== Disable heavy packages (minimize size & RAM) =====
+          # 关闭高内存占用项
           CONFIG_PACKAGE_luci-app-firewall=n
-          CONFIG_PACKAGE_luci-app-opkg=n
           CONFIG_PACKAGE_luci-app-sqm=n
           CONFIG_PACKAGE_luci-app-upnp=n
-          CONFIG_PACKAGE_luci-app-ddns=n
-          CONFIG_PACKAGE_luci-app-uhttpd=n
-          CONFIG_PACKAGE_luci-app-statistics=n
           CONFIG_PACKAGE_collectd=n
-          CONFIG_PACKAGE_collectd-mod-cpu=n
-          CONFIG_PACKAGE_collectd-mod-memory=n
-          CONFIG_PACKAGE_collectd-mod-interface=n
           CONFIG_PACKAGE_netdata=n
           CONFIG_PACKAGE_nginx=n
-          CONFIG_PACKAGE_rpcd-mod-rrdns=n
+          # 禁用 LTO，防止链接阶段 OOM
+          # CONFIG_USE_LTO is not set
           EOF
-
-          # Auto-answer all interactive prompts with defaults
+          
+          # 自动处理交互
           yes "" | make oldconfig
 
-          # Verify key packages are selected
-          echo ">>> Config summary:"
-          grep -E "CONFIG_PACKAGE_(kmod-bcm59111-pse|luci|rpcd|uhttpd)" .config || echo "Warning: Some key packages missing"
-
-      - name: Build firmware (low parallelism to avoid OOM)
+      # 【关键修复 3】改为单线程编译，保证成功率（虽然慢点但稳）
+      - name: Build firmware (Safe Mode)
         run: |
-          make -j2 V=s 2>&1 | tee build.log
-          # Check for errors in the last 50 lines
-          if tail -n 50 build.log | grep -q "Error"; then
-            echo "Build failed!"
+          cd openwrt
+          make clean
+          # 使用 -j1 单线程，V=s 显示详细日志
+          make -j1 V=s 2>&1 | tee build.log
+          
+          # 检查错误
+          if tail -n 100 build.log | grep -q "Error"; then
+            echo "❌ Build failed! Check build.log for details."
             exit 1
           fi
 
-      - name: Upload firmware artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mx65-poe-minimal-firmware
-          path: |
-            bin/targets/bcm53xx/generic/openwrt-bcm53xx-generic-meraki_mx65-squashfs-sysupgrade.bin
-            bin/targets/bcm53xx/generic/openwrt-bcm53xx-generic-meraki_mx65-initramfs-kernel.bin
-          retention-days: 30
+          name: MX65-PoE-Minimal-Firmware
+          path: openwrt/bin/targets/bcm53xx/generic/
           if-no-files-found: error
